@@ -1,13 +1,12 @@
+
 import os
 import re
 import html
 import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
-# Public proxy ke through PPU ka page fetch karenge taaki 403 block na aaye
-TARGET_URL = "https://ppup.ac.in/notice-board"
-PROXY_URL = f"https://api.allorigins.win/raw?url={requests.utils.quote(TARGET_URL)}"
-
+PPU_URL = "https://ppup.ac.in/notice-board"
 STATE_FILE = "last_notice.txt"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -15,15 +14,19 @@ CHAT_ID = "1472421595"
 
 
 def get_latest_notice():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    # Real headless browser chalakar page load karenge
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+        page.goto(PPU_URL, timeout=60000, wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
+        html_content = page.content()
+        browser.close()
 
-    # Proxy se HTML mangwayenge
-    response = requests.get(PROXY_URL, headers=headers, timeout=45)
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(html_content, "html.parser")
     notices = []
 
     for link in soup.find_all("a", href=True):
