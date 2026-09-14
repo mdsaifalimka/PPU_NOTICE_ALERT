@@ -3,9 +3,11 @@ import re
 import html
 import requests
 from bs4 import BeautifulSoup
-from curl_cffi import requests as c_requests
 
-PPU_URL = "https://ppup.ac.in/notice-board"
+# Public proxy ke through PPU ka page fetch karenge taaki 403 block na aaye
+TARGET_URL = "https://ppup.ac.in/notice-board"
+PROXY_URL = f"https://api.allorigins.win/raw?url={requests.utils.quote(TARGET_URL)}"
+
 STATE_FILE = "last_notice.txt"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -13,11 +15,12 @@ CHAT_ID = "1472421595"
 
 
 def get_latest_notice():
-    response = c_requests.get(
-        PPU_URL,
-        impersonate="chrome124",
-        timeout=30
-    )
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    # Proxy se HTML mangwayenge
+    response = requests.get(PROXY_URL, headers=headers, timeout=45)
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
