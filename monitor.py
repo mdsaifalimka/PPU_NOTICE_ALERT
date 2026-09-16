@@ -3,12 +3,9 @@ import re
 import html
 import requests
 from bs4 import BeautifulSoup
-from curl_cffi import requests as c_requests
+from playwright.sync_api import sync_playwright
 
-PPU_URLS = [
-    "https://ppup.ac.in/notice-board",
-    "https://ppup.ac.in"
-]
+PPU_URL = "https://ppup.ac.in/notice-board"
 STATE_FILE = "last_notice.txt"
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -16,57 +13,49 @@ CHAT_ID = "1472421595"
 
 
 def get_latest_notice():
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://ppup.ac.in/"
-    }
+    # Headless browser se page fetch hoga taki 403 block na ho
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+        page.goto(PPU_URL, timeout=60000, wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
+        html_content = page.content()
+        browser.close()
 
+    soup = BeautifulSoup(html_content, "html.parser")
     notices = []
 
-    for url in PPU_URLS:
-        try:
-            response = c_requests.get(
-                url,
-                impersonate="chrome124",
-                timeout=30,
-                headers=headers
-            )
-            if response.status_code != 200:
-                continue
+    for link in soup.find_all("a", href=True):
+        href = link.get("href", "").strip()
 
-            soup = BeautifulSoup(response.text, "html.parser")
+        # Regular notice, circular, direct PDF ya upload notice sab check karega
+        is_valid = any(term in href.lower() for term in ["/details/", ".pdf", "/upload/"])
+        if not is_valid:
+            continue
 
-            for link in soup.find_all("a", href=True):
-                href = link.get("href", "").strip()
+        title = link.get_text(" ", strip=True)
+        if not title or len(title) < 5:
+            continue
 
-                # Details page, direct PDF, ya upload path teeno ko accept karega
-                is_valid = any(sub in href.lower() for sub in ["/details/", ".pdf", "/upload/"])
-                if not is_valid:
-                    continue
+        if href.startswith("http"):
+            url = href
+        else:
+            url = "https://ppup.ac.in" + (href if href.startswith("/") else "/" + href)
 
-                title = link.get_text(" ", strip=True)
-                if not title or len(title) < 5:
-                    continue
+        parent = link.find_parent("li")
+        text = parent.get_text(" ", strip=True) if parent else link.parent.get_text(" ", strip=True)
 
-                full_url = href if href.startswith("http") else "https://ppup.ac.in" + (href if href.startswith("/") else "/" + href)
+        date_match = re.search(r"(\d{2}[-./]\d{2}[-./]\d{4})", text)
+        date = date_match.group(1) if date_match else "Official Circular"
 
-                parent = link.find_parent("li")
-                text = parent.get_text(" ", strip=True) if parent else link.parent.get_text(" ", strip=True)
-
-                date_match = re.search(
-                    r"(\d{2}[-./]\d{2}[-./]\d{4})",
-                    text
-                )
-                date = date_match.group(1) if date_match else "Official Circular"
-
-                notices.append({
-                    "title": title,
-                    "date": date,
-                    "url": full_url
-                })
-        except Exception as e:
-            print(f"Error checking {url}: {e}")
+        notices.append({
+            "title": title,
+            "date": date,
+            "url": url
+        })
 
     if not notices:
         raise Exception("No PPU notices found")
@@ -78,7 +67,7 @@ def send_telegram(notice):
     message = (
         "🔔 <b>PPU NEW NOTICE</b>\n\n"
         f"📢 <b>{html.escape(notice['title'])}</b>\n"
-        f"📅 Date/Tag: {notice['date']}\n\n"
+        f"📅 Date: {notice['date']}\n\n"
         f"🔗 <a href=\"{html.escape(notice['url'], quote=True)}\">Open Notice</a>"
     )
 
