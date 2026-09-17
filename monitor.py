@@ -1,7 +1,6 @@
 import os
 import html
 import requests
-from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 STATE_FILE = "last_notice.txt"
@@ -12,35 +11,40 @@ CHAT_ID = "1472421595"
 def fetch_samarth_notices(page):
     notices = []
     try:
-        page.goto("https://ppupadm.samarth.edu.in/index.php/notifications/index", timeout=60000)
-        # Samarth portal ke load hone ka wait
-        page.wait_for_timeout(5000)
+        # Samarth portal open karein
+        page.goto("https://ppupadm.samarth.edu.in/index.php/notifications/index", timeout=60000, wait_until="networkidle")
+        
+        # 'Read Notice' ya 'View Notice' button aane ka intezar karein
+        locator = page.locator("text=/Read Notice|View Notice/i").first
+        locator.wait_for(timeout=20000)
 
-        soup = BeautifulSoup(page.content(), "html.parser")
+        # Saare buttons/links collect karein
+        buttons = page.locator("a:has-text('Read Notice'), a:has-text('View Notice')").all()
 
-        # 'Read Notice' ya 'View Notice' wale links dhoondhna
-        for a_tag in soup.find_all("a", href=True):
-            btn_text = a_tag.get_text(" ", strip=True).lower()
-            if "read notice" in btn_text or "view notice" in btn_text:
-                url = a_tag.get("href", "").strip()
-                if not url.startswith("http"):
-                    url = "https://ppupadm.samarth.edu.in" + (url if url.startswith("/") else "/" + url)
+        for btn in buttons:
+            href = btn.get_attribute("href")
+            if not href:
+                continue
 
-                # Us row ya card ka pura text lena
-                parent = a_tag.find_parent("tr")
-                if not parent:
-                    parent = a_tag.find_parent("div")
+            full_url = href if href.startswith("http") else "https://ppupadm.samarth.edu.in" + (href if href.startswith("/") else "/" + href)
 
-                card_text = parent.get_text(" ", strip=True) if parent else ""
+            # Us row ka title nikalna
+            row = btn.locator("xpath=./ancestor::tr")
+            if row.count() > 0:
+                row_text = row.inner_text().strip()
+            else:
+                row_text = btn.locator("xpath=./ancestor::div[contains(@class,'card') or contains(@class,'row') or contains(@class,'item')]").inner_text().strip()
 
-                # Title nikalna
-                clean_title = card_text.replace("Read Notice", "").replace("View Notice", "").strip()
+            clean_title = row_text.replace("Read Notice", "").replace("View Notice", "").strip()
+            # Faltu newlines hatana
+            clean_title = " ".join(clean_title.split())
 
-                notices.append({
-                    "title": clean_title if clean_title else "PPU Admission Notice",
-                    "url": url,
-                    "source": "Samarth Admission Portal"
-                })
+            notices.append({
+                "title": clean_title if clean_title else "PPU Admission Merit / Notice",
+                "url": full_url,
+                "source": "Samarth Admission Portal"
+            })
+
     except Exception as e:
         print(f"Samarth fetch error: {e}")
 
@@ -91,15 +95,15 @@ def main():
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             old_key = f.read().strip()
 
-    print(f"Latest notice picked: {latest['title']} ({unique_key})")
+    print(f"Notice found: {latest['title']} -> {unique_key}")
 
     if unique_key != old_key:
         send_telegram(latest)
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             f.write(unique_key)
-        print("Alert sent to Telegram successfully!")
+        print("Telegram alert delivered successfully!")
     else:
-        print("Notice already sent, no new update.")
+        print("Already sent, skipping duplicate.")
 
 
 if __name__ == "__main__":
