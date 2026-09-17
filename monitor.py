@@ -1,4 +1,3 @@
-
 import os
 import html
 import requests
@@ -13,41 +12,35 @@ CHAT_ID = "1472421595"
 def fetch_samarth_notices(page):
     notices = []
     try:
-        # Samarth portal open karna
-        page.goto("https://ppupadm.samarth.edu.in/index.php/notifications/index", timeout=60000, wait_until="networkidle")
-        page.wait_for_selector("table", timeout=15000)
-        page.wait_for_timeout(2000)
+        page.goto("https://ppupadm.samarth.edu.in/index.php/notifications/index", timeout=60000)
+        # Samarth portal ke load hone ka wait
+        page.wait_for_timeout(5000)
 
         soup = BeautifulSoup(page.content(), "html.parser")
-        table = soup.find("table")
 
-        if table:
-            tbody = table.find("tbody") or table
-            for tr in tbody.find_all("tr"):
-                tds = tr.find_all("td")
-                if len(tds) >= 3:
-                    # Column 1: Date
-                    date_val = tds[0].get_text(" ", strip=True)
-                    
-                    # Column 2: Document Link (Read Notice / View Notice)
-                    a_tag = tds[1].find("a", href=True)
-                    
-                    # Column 3: Title
-                    title_val = tds[2].get_text(" ", strip=True)
+        # 'Read Notice' ya 'View Notice' wale links dhoondhna
+        for a_tag in soup.find_all("a", href=True):
+            btn_text = a_tag.get_text(" ", strip=True).lower()
+            if "read notice" in btn_text or "view notice" in btn_text:
+                url = a_tag.get("href", "").strip()
+                if not url.startswith("http"):
+                    url = "https://ppupadm.samarth.edu.in" + (url if url.startswith("/") else "/" + url)
 
-                    if a_tag and title_val:
-                        link_href = a_tag.get("href", "").strip()
-                        if not link_href.startswith("http"):
-                            full_url = "https://ppupadm.samarth.edu.in" + (link_href if link_href.startswith("/") else "/" + link_href)
-                        else:
-                            full_url = link_href
+                # Us row ya card ka pura text lena
+                parent = a_tag.find_parent("tr")
+                if not parent:
+                    parent = a_tag.find_parent("div")
 
-                        notices.append({
-                            "title": title_val,
-                            "date": date_val,
-                            "url": full_url,
-                            "source": "Samarth Admission Portal"
-                        })
+                card_text = parent.get_text(" ", strip=True) if parent else ""
+
+                # Title nikalna
+                clean_title = card_text.replace("Read Notice", "").replace("View Notice", "").strip()
+
+                notices.append({
+                    "title": clean_title if clean_title else "PPU Admission Notice",
+                    "url": url,
+                    "source": "Samarth Admission Portal"
+                })
     except Exception as e:
         print(f"Samarth fetch error: {e}")
 
@@ -58,8 +51,7 @@ def send_telegram(notice):
     message = (
         f"🔔 <b>NEW PPU NOTICE ALERT</b>\n"
         f"📌 <i>Source: {notice['source']}</i>\n\n"
-        f"📢 <b>{html.escape(notice['title'])}</b>\n"
-        f"📅 Date: {html.escape(notice['date'])}\n\n"
+        f"📢 <b>{html.escape(notice['title'])}</b>\n\n"
         f"🔗 <a href=\"{html.escape(notice['url'], quote=True)}\">View / Download Notice</a>"
     )
 
