@@ -1,5 +1,5 @@
+
 import os
-import re
 import html
 import requests
 from bs4 import BeautifulSoup
@@ -10,118 +10,57 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = "1472421595"
 
 
-def fetch_samarth_admission_notices(page):
-    """ppupadm.samarth.edu.in admission portal"""
+def fetch_samarth_notices(page):
     notices = []
     try:
-        page.goto(
-            "https://ppupadm.samarth.edu.in/index.php/notifications/index",
-            timeout=60000,
-            wait_until="networkidle"
-        )
-        page.wait_for_timeout(3000)
+        # Samarth portal open karna
+        page.goto("https://ppupadm.samarth.edu.in/index.php/notifications/index", timeout=60000, wait_until="networkidle")
+        page.wait_for_selector("table", timeout=15000)
+        page.wait_for_timeout(2000)
 
         soup = BeautifulSoup(page.content(), "html.parser")
-        
-        # Samarth portal ke table rows
-        for row in soup.find_all("tr"):
-            cols = row.find_all("td")
-            if len(cols) >= 2:
-                # Text aur link search karna
-                a_tag = row.find("a", href=True)
-                if a_tag:
-                    title_text = row.get_text(" ", strip=True)
-                    url = a_tag.get("href", "").strip()
-                    if not url.startswith("http"):
-                        url = "https://ppupadm.samarth.edu.in" + (url if url.startswith("/") else "/" + url)
+        table = soup.find("table")
 
-                    # Date match karna
-                    date_match = re.search(r"(\d{2}[-/.]\d{2}[-/.]\d{4})", title_text)
-                    date_val = date_match.group(1) if date_match else "Admission Notice"
+        if table:
+            tbody = table.find("tbody") or table
+            for tr in tbody.find_all("tr"):
+                tds = tr.find_all("td")
+                if len(tds) >= 3:
+                    # Column 1: Date
+                    date_val = tds[0].get_text(" ", strip=True)
+                    
+                    # Column 2: Document Link (Read Notice / View Notice)
+                    a_tag = tds[1].find("a", href=True)
+                    
+                    # Column 3: Title
+                    title_val = tds[2].get_text(" ", strip=True)
 
-                    # Saaf title banana
-                    clean_title = a_tag.get_text(" ", strip=True)
-                    if not clean_title or len(clean_title) < 5:
-                        clean_title = cols[-1].get_text(" ", strip=True)
+                    if a_tag and title_val:
+                        link_href = a_tag.get("href", "").strip()
+                        if not link_href.startswith("http"):
+                            full_url = "https://ppupadm.samarth.edu.in" + (link_href if link_href.startswith("/") else "/" + link_href)
+                        else:
+                            full_url = link_href
 
-                    notices.append({
-                        "title": clean_title,
-                        "date": date_val,
-                        "url": url,
-                        "source": "Samarth Admission Portal"
-                    })
+                        notices.append({
+                            "title": title_val,
+                            "date": date_val,
+                            "url": full_url,
+                            "source": "Samarth Admission Portal"
+                        })
     except Exception as e:
-        print(f"Error fetching Samarth: {e}")
+        print(f"Samarth fetch error: {e}")
 
     return notices
-
-
-def fetch_main_ppu_notices(page):
-    """ppup.ac.in/notice-board"""
-    notices = []
-    try:
-        page.goto(
-            "https://ppup.ac.in/notice-board",
-            timeout=60000,
-            wait_until="domcontentloaded"
-        )
-        page.wait_for_timeout(3000)
-
-        soup = BeautifulSoup(page.content(), "html.parser")
-        for link in soup.find_all("a", href=True):
-            href = link.get("href", "").strip()
-            if not any(term in href.lower() for term in ["/details/", ".pdf", "/upload/"]):
-                continue
-
-            title = link.get_text(" ", strip=True)
-            if not title or len(title) < 5:
-                continue
-
-            url = href if href.startswith("http") else "https://ppup.ac.in" + (href if href.startswith("/") else "/" + href)
-            parent = link.find_parent("li")
-            text = parent.get_text(" ", strip=True) if parent else link.parent.get_text(" ", strip=True)
-            date_match = re.search(r"(\d{2}[-./]\d{2}[-./]\d{4})", text)
-            date = date_match.group(1) if date_match else "General Circular"
-
-            notices.append({
-                "title": title,
-                "date": date,
-                "url": url,
-                "source": "PPU Notice Board"
-            })
-    except Exception as e:
-        print(f"Error fetching Main PPU: {e}")
-
-    return notices
-
-
-def get_latest_notice():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        )
-        page = context.new_page()
-
-        samarth_list = fetch_samarth_admission_notices(page)
-        main_list = fetch_main_ppu_notices(page)
-
-        browser.close()
-
-    all_notices = samarth_list + main_list
-
-    if not all_notices:
-        raise Exception("No notices found on either portal")
-
-    return all_notices[0]
 
 
 def send_telegram(notice):
     message = (
-        f"🔔 <b>NEW PPU ALERT</b> ({notice.get('source', 'PPU')})\n\n"
+        f"🔔 <b>NEW PPU NOTICE ALERT</b>\n"
+        f"📌 <i>Source: {notice['source']}</i>\n\n"
         f"📢 <b>{html.escape(notice['title'])}</b>\n"
         f"📅 Date: {html.escape(notice['date'])}\n\n"
-        f"🔗 <a href=\"{html.escape(notice['url'], quote=True)}\">Open Notice / PDF</a>"
+        f"🔗 <a href=\"{html.escape(notice['url'], quote=True)}\">View / Download Notice</a>"
     )
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -139,23 +78,36 @@ def send_telegram(notice):
 
 
 def main():
-    notice = get_latest_notice()
-    current_id = notice["url"]
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+        notices = fetch_samarth_notices(page)
+        browser.close()
 
-    old_id = ""
+    if not notices:
+        print("No notices found from Samarth portal.")
+        return
+
+    latest = notices[0]
+    unique_key = latest["url"]
+
+    old_key = ""
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            old_id = f.read().strip()
+            old_key = f.read().strip()
 
-    print(f"Latest notice picked: {notice['title']} -> {current_id}")
+    print(f"Latest notice picked: {latest['title']} ({unique_key})")
 
-    if current_id != old_id:
-        send_telegram(notice)
+    if unique_key != old_key:
+        send_telegram(latest)
         with open(STATE_FILE, "w", encoding="utf-8") as f:
-            f.write(current_id)
-        print("Sent to Telegram!")
+            f.write(unique_key)
+        print("Alert sent to Telegram successfully!")
     else:
-        print("No new notice.")
+        print("Notice already sent, no new update.")
 
 
 if __name__ == "__main__":
