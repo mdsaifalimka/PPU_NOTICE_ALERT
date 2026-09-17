@@ -9,80 +9,101 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = "1472421595"
 
 
-def fetch_latest_notice():
-    # Target 1: PPU Examination Portal (Always accessible, plain tables)
-    urls = [
-        "https://ppuponline.in/",
-        "https://ppup.ac.in/notice-board"
-    ]
-    
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36")
+def fetch_samarth(page):
+    notices = []
+    try:
+        page.goto("https://ppupadm.samarth.edu.in/", timeout=60000, wait_until="domcontentloaded")
+        page.wait_for_timeout(4000)
 
-        for target_url in urls:
-            try:
-                page.goto(target_url, timeout=30000, wait_until="domcontentloaded")
-                page.wait_for_timeout(3000)
-                soup = BeautifulSoup(page.content(), "html.parser")
+        # 1. Marquee / Flash Alerts
+        marquee_items = page.locator("marquee a, .marquee a, marquee, .flash-news a").all()
+        for item in marquee_items:
+            text = item.inner_text().strip()
+            if text and len(text) > 8 and any(k in text.lower() for k in ["merit", "pg", "admission", "notice", "list", "cutoff"]):
+                href = item.get_attribute("href") or ""
+                url = href if href.startswith("http") else ("https://ppupadm.samarth.edu.in" + href if href else "https://ppupadm.samarth.edu.in/")
+                notices.append({"title": " ".join(text.split()), "url": url, "source": "Samarth Admission Portal"})
 
-                for a in soup.find_all("a", href=True):
-                    href = a["href"].strip()
-                    title = a.get_text(" ", strip=True)
+        # 2. General Links with Merit / PG keywords
+        all_links = page.locator("a").all()
+        for link in all_links:
+            text = link.inner_text().strip()
+            href = link.get_attribute("href") or ""
+            if text and any(k in text.lower() for k in ["merit", "pg admission", "selection list", "pg merit"]):
+                url = href if href.startswith("http") else ("https://ppupadm.samarth.edu.in" + href if href else "https://ppupadm.samarth.edu.in/")
+                notices.append({"title": " ".join(text.split()), "url": url, "source": "Samarth Admission Portal"})
+    except Exception as e:
+        print(f"Samarth scrape error: {e}")
 
-                    if not href or len(title) < 8:
-                        continue
+    return notices
 
-                    # Filter out nav links
-                    if any(x in href.lower() for x in [".pdf", "notice", "circular", "download", "view"]):
-                        base = "https://ppuponline.in" if "ppuponline" in target_url else "https://ppup.ac.in"
-                        full_url = href if href.startswith("http") else base + ("" if href.startswith("/") else "/") + href
-                        
-                        browser.close()
-                        return {
-                            "title": title,
-                            "url": full_url,
-                            "source": "PPU Portal"
-                        }
-            except Exception as e:
-                print(f"Failed {target_url}: {e}")
 
-        browser.close()
-    return None
+def fetch_ppu_board(page):
+    notices = []
+    try:
+        page.goto("https://ppup.ac.in/notice-board", timeout=60000, wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
+        content = page.content()
+        soup = BeautifulSoup(content, "html.parser")
+
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            title = a.get_text(" ", strip=True)
+            if title and len(title) > 8 and ("/details/" in href or "notice" in href.lower() or href.endswith(".pdf")):
+                full = href if href.startswith("http") else "https://ppup.ac.in" + (href if href.startswith("/") else "/" + href)
+                notices.append({"title": title, "url": full, "source": "PPU Main Board"})
+    except Exception as e:
+        print(f"PPU board scrape error: {e}")
+
+    return notices
 
 
 def send_telegram(notice):
     msg = (
-        "🔔 <b>NEW PPU NOTICE ALERT</b>\n\n"
+        f"🔔 <b>NEW PPU ALERT</b>\n"
+        f"📌 <i>Source: {notice['source']}</i>\n\n"
         f"📢 <b>{html.escape(notice['title'])}</b>\n\n"
-        f"🔗 <a href=\"{html.escape(notice['url'], quote=True)}\">View Notice Document</a>"
+        f"🔗 <a href=\"{html.escape(notice['url'], quote=True)}\">View Notice / List</a>"
     )
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    res = requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=25)
+    res = requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML", "disable_web_page_preview": False}, timeout=25)
     res.raise_for_status()
 
 
 def main():
-    notice = fetch_latest_notice()
-    if not notice:
-        print("No notice found across portals.")
+    collected = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36")
+        page = context.new_page()
+
+        collected.extend(fetch_samarth(page))
+        collected.extend(fetch_ppu_board(page))
+        browser.close()
+
+    if not collected:
+        print("No notices found.")
         return
 
-    unique_key = notice["url"]
-    old_key = ""
+    # Store sent URLs to avoid duplicates
+    seen = set()
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            old_key = f.read().strip()
+            seen = set(line.strip() for line in f if line.strip())
 
-    print(f"Captured: {notice['title']} -> {unique_key}")
+    sent_any = False
+    with open(STATE_FILE, "a", encoding="utf-8") as f:
+        for item in collected:
+            key = item["url"]
+            if key not in seen:
+                send_telegram(item)
+                seen.add(key)
+                f.write(key + "\n")
+                sent_any = True
+                print(f"Sent: {item['title']}")
 
-    if unique_key != old_key:
-        send_telegram(notice)
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            f.write(unique_key)
-        print("Telegram message delivered successfully!")
-    else:
-        print("Notice already sent.")
+    if not sent_any:
+        print("No new notices found, all previous items already alerted.")
 
 
 if __name__ == "__main__":
