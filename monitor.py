@@ -10,13 +10,51 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = "1472421595"
 
 
+def fetch_samarth_admission_notices(context):
+    """ppupadm.samarth.edu.in portal se notices nikalne ke liye"""
+    notices = []
+    try:
+        page = context.new_page()
+        page.goto("https://ppupadm.samarth.edu.in/index.php/notifications/index", timeout=60000, wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
+        soup = BeautifulSoup(page.content(), "html.parser")
+        page.close()
+
+        # Samarth table ke sabhi rows
+        for row in soup.find_all("tr"):
+            cols = row.find_all("td")
+            if len(cols) >= 3:
+                date_text = cols[0].get_text(" ", strip=True)
+                
+                # Document link dhundhna
+                link_tag = cols[1].find("a", href=True)
+                title_tag = cols[2]
+                title_text = title_tag.get_text(" ", strip=True)
+
+                if link_tag and title_text:
+                    url = link_tag.get("href", "").strip()
+                    if not url.startswith("http"):
+                        url = "https://ppupadm.samarth.edu.in" + (url if url.startswith("/") else "/" + url)
+                    
+                    notices.append({
+                        "title": title_text,
+                        "date": date_text,
+                        "url": url,
+                        "source": "Samarth Admission Portal"
+                    })
+    except Exception as e:
+        print(f"Error fetching Samarth portal: {e}")
+
+    return notices
+
+
 def fetch_main_ppu_notices(context):
     """ppup.ac.in/notice-board se notices nikalne ke liye"""
     notices = []
     try:
         page = context.new_page()
         page.goto("https://ppup.ac.in/notice-board", timeout=60000, wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(3000)
         soup = BeautifulSoup(page.content(), "html.parser")
         page.close()
 
@@ -42,42 +80,7 @@ def fetch_main_ppu_notices(context):
                 "source": "PPU Notice Board"
             })
     except Exception as e:
-        print(f"Error fetching main notice board: {e}")
-
-    return notices
-
-
-def fetch_samarth_admission_notices(context):
-    """ppupadm.samarth.edu.in admission portal se notices nikalne ke liye"""
-    notices = []
-    try:
-        page = context.new_page()
-        page.goto("https://ppupadm.samarth.edu.in/index.php/notifications/index", timeout=60000, wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
-        soup = BeautifulSoup(page.content(), "html.parser")
-        page.close()
-
-        # Samarth portal ke table rows
-        rows = soup.find_all("tr")
-        for row in rows:
-            cols = row.find_all("td")
-            if len(cols) >= 3:
-                date_text = cols[0].get_text(" ", strip=True)
-                link_tag = cols[1].find("a", href=True)
-                title_text = cols[2].get_text(" ", strip=True)
-
-                if link_tag and title_text:
-                    href = link_tag.get("href", "").strip()
-                    url = href if href.startswith("http") else "https://ppupadm.samarth.edu.in" + (href if href.startswith("/") else "/" + href)
-                    
-                    notices.append({
-                        "title": title_text,
-                        "date": date_text,
-                        "url": url,
-                        "source": "PPU Admission Portal"
-                    })
-    except Exception as e:
-        print(f"Error fetching samarth portal: {e}")
+        print(f"Error fetching main PPU board: {e}")
 
     return notices
 
@@ -89,23 +92,25 @@ def get_latest_notice():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
 
-        all_notices = []
-        # Pehle admission notices check karega
-        all_notices.extend(fetch_samarth_admission_notices(context))
-        # Fir main website ke notices check karega
-        all_notices.extend(fetch_main_ppu_notices(context))
+        # Samarth admission portal ke notices
+        samarth_notices = fetch_samarth_admission_notices(context)
+        # Main website ke notices
+        main_notices = fetch_main_ppu_notices(context)
 
         browser.close()
 
-    if not all_notices:
+    # Pehle Samarth ke notices check honge kyunki admission/merit wahi aate hain
+    if samarth_notices:
+        return samarth_notices[0]
+    elif main_notices:
+        return main_notices[0]
+    else:
         raise Exception("No notices found from any PPU portal")
-
-    return all_notices[0]
 
 
 def send_telegram(notice):
     message = (
-        f"🔔 <b>NEW PPU ALERT ({notice.get('source', 'PPU')})</b>\n\n"
+        f"🔔 <b>NEW PPU ALERT</b> ({notice.get('source', 'PPU')})\n\n"
         f"📢 <b>{html.escape(notice['title'])}</b>\n"
         f"📅 Date: {notice['date']}\n\n"
         f"🔗 <a href=\"{html.escape(notice['url'], quote=True)}\">Open Notice / PDF</a>"
