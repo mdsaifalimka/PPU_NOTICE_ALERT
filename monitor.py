@@ -5,74 +5,113 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-PPU_URL = "https://ppup.ac.in/notice-board"
 STATE_FILE = "last_notice.txt"
-
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = "1472421595"
 
 
+def fetch_main_ppu_notices(context):
+    """ppup.ac.in/notice-board se notices nikalne ke liye"""
+    notices = []
+    try:
+        page = context.new_page()
+        page.goto("https://ppup.ac.in/notice-board", timeout=60000, wait_until="domcontentloaded")
+        page.wait_for_timeout(2000)
+        soup = BeautifulSoup(page.content(), "html.parser")
+        page.close()
+
+        for link in soup.find_all("a", href=True):
+            href = link.get("href", "").strip()
+            if not any(term in href.lower() for term in ["/details/", ".pdf", "/upload/"]):
+                continue
+
+            title = link.get_text(" ", strip=True)
+            if not title or len(title) < 5:
+                continue
+
+            url = href if href.startswith("http") else "https://ppup.ac.in" + (href if href.startswith("/") else "/" + href)
+            parent = link.find_parent("li")
+            text = parent.get_text(" ", strip=True) if parent else link.parent.get_text(" ", strip=True)
+            date_match = re.search(r"(\d{2}[-./]\d{2}[-./]\d{4})", text)
+            date = date_match.group(1) if date_match else "Official Circular"
+
+            notices.append({
+                "title": title,
+                "date": date,
+                "url": url,
+                "source": "PPU Notice Board"
+            })
+    except Exception as e:
+        print(f"Error fetching main notice board: {e}")
+
+    return notices
+
+
+def fetch_samarth_admission_notices(context):
+    """ppupadm.samarth.edu.in admission portal se notices nikalne ke liye"""
+    notices = []
+    try:
+        page = context.new_page()
+        page.goto("https://ppupadm.samarth.edu.in/index.php/notifications/index", timeout=60000, wait_until="domcontentloaded")
+        page.wait_for_timeout(2000)
+        soup = BeautifulSoup(page.content(), "html.parser")
+        page.close()
+
+        # Samarth portal ke table rows
+        rows = soup.find_all("tr")
+        for row in rows:
+            cols = row.find_all("td")
+            if len(cols) >= 3:
+                date_text = cols[0].get_text(" ", strip=True)
+                link_tag = cols[1].find("a", href=True)
+                title_text = cols[2].get_text(" ", strip=True)
+
+                if link_tag and title_text:
+                    href = link_tag.get("href", "").strip()
+                    url = href if href.startswith("http") else "https://ppupadm.samarth.edu.in" + (href if href.startswith("/") else "/" + href)
+                    
+                    notices.append({
+                        "title": title_text,
+                        "date": date_text,
+                        "url": url,
+                        "source": "PPU Admission Portal"
+                    })
+    except Exception as e:
+        print(f"Error fetching samarth portal: {e}")
+
+    return notices
+
+
 def get_latest_notice():
-    # Headless browser se page fetch hoga taki 403 block na ho
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
-        page = context.new_page()
-        page.goto(PPU_URL, timeout=60000, wait_until="domcontentloaded")
-        page.wait_for_timeout(3000)
-        html_content = page.content()
+
+        all_notices = []
+        # Pehle admission notices check karega
+        all_notices.extend(fetch_samarth_admission_notices(context))
+        # Fir main website ke notices check karega
+        all_notices.extend(fetch_main_ppu_notices(context))
+
         browser.close()
 
-    soup = BeautifulSoup(html_content, "html.parser")
-    notices = []
+    if not all_notices:
+        raise Exception("No notices found from any PPU portal")
 
-    for link in soup.find_all("a", href=True):
-        href = link.get("href", "").strip()
-
-        # Regular notice, circular, direct PDF ya upload notice sab check karega
-        is_valid = any(term in href.lower() for term in ["/details/", ".pdf", "/upload/"])
-        if not is_valid:
-            continue
-
-        title = link.get_text(" ", strip=True)
-        if not title or len(title) < 5:
-            continue
-
-        if href.startswith("http"):
-            url = href
-        else:
-            url = "https://ppup.ac.in" + (href if href.startswith("/") else "/" + href)
-
-        parent = link.find_parent("li")
-        text = parent.get_text(" ", strip=True) if parent else link.parent.get_text(" ", strip=True)
-
-        date_match = re.search(r"(\d{2}[-./]\d{2}[-./]\d{4})", text)
-        date = date_match.group(1) if date_match else "Official Circular"
-
-        notices.append({
-            "title": title,
-            "date": date,
-            "url": url
-        })
-
-    if not notices:
-        raise Exception("No PPU notices found")
-
-    return notices[0]
+    return all_notices[0]
 
 
 def send_telegram(notice):
     message = (
-        "🔔 <b>PPU NEW NOTICE</b>\n\n"
+        f"🔔 <b>NEW PPU ALERT ({notice.get('source', 'PPU')})</b>\n\n"
         f"📢 <b>{html.escape(notice['title'])}</b>\n"
         f"📅 Date: {notice['date']}\n\n"
-        f"🔗 <a href=\"{html.escape(notice['url'], quote=True)}\">Open Notice</a>"
+        f"🔗 <a href=\"{html.escape(notice['url'], quote=True)}\">Open Notice / PDF</a>"
     )
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
     response = requests.post(
         url,
         data={
