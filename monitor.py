@@ -44,36 +44,41 @@ def fetch_latest_notices():
         except Exception as e:
             print("Samarth fetch error:", e)
 
-        # 2. Main PPU Notice Board Check (Direct Link & Date Fix)
+        # 2. Main PPU Notice Board Check
         try:
             page.goto("https://ppup.ac.in/notice-board", timeout=40000, wait_until="domcontentloaded")
             page.wait_for_timeout(2000)
             content = page.content()
             soup = BeautifulSoup(content, "html.parser")
 
+            # Ignore list: Header/Nav links jo galti se match ho jate hain
+            bad_keywords = ["admission-notice", "javascript:", "#", "tel:", "mailto:"]
+
             for a in soup.find_all("a", href=True):
                 href = a["href"].strip()
                 title = a.get_text(" ", strip=True)
 
-                # Page ke faltu links chhod kar sirf direct details/notice link pakdo
-                if not href or href == "#" or "javascript:" in href:
+                if any(bad in href.lower() for bad in bad_keywords):
                     continue
 
-                if "/details/" in href or "notice" in href.lower() or href.endswith(".pdf"):
-                    # Date nikaalo
-                    parent = a.find_parent("li") or a.parent
-                    p_text = parent.get_text(" ", strip=True) if parent else ""
-                    date_match = re.search(r"Updated\s*On\s*:?\s*(\d{2}-\d{2}-\d{4})", p_text, re.IGNORECASE)
+                # Notice list items me aksar /details/ ya .pdf hota hai, ya parent container me 'Updated On' hota hai
+                parent = a.find_parent("li") or a.find_parent("tr") or a.parent
+                p_text = parent.get_text(" ", strip=True) if parent else ""
+
+                has_date = bool(re.search(r"Updated\s*On", p_text, re.IGNORECASE))
+                is_notice_link = "/details/" in href or href.lower().endswith(".pdf") or "download" in href.lower()
+
+                if (is_notice_link or has_date) and len(title) > 5:
+                    date_match = re.search(r"(\d{2}[-/]\d{2}[-/]\d{4})", p_text)
                     date_val = date_match.group(1) if date_match else "Latest"
 
-                    # Full URL banao
                     if href.startswith("http"):
                         full_url = href
                     else:
                         full_url = "https://ppup.ac.in" + (href if href.startswith("/") else "/" + href)
 
                     clean_title = " ".join(title.split())
-                    uid_str = f"{clean_title}_{date_val}"
+                    uid_str = f"{clean_title}_{date_val}_{full_url}"
 
                     notices.append({
                         "title": clean_title,
@@ -126,7 +131,7 @@ def main():
             last_id = f.read().strip()
 
     latest = notices[0]
-    print(f"Checking notice: {latest['title']} ({latest['date']})")
+    print(f"Checking notice: {latest['title']} ({latest['date']}) -> {latest['url']}")
 
     if latest["uid"] != last_id:
         send_telegram(latest)
